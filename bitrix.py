@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -71,6 +72,25 @@ class BitrixClient:
 
         return None
 
+    async def _upload_via_file_content(self, folder_id: int, local_path: str, name: str) -> int:
+        with open(local_path, "rb") as file_obj:
+            encoded = base64.b64encode(file_obj.read()).decode("ascii")
+
+        payload = await self.call(
+            "disk.folder.uploadfile",
+            [
+                ("id", str(int(folder_id))),
+                ("data[NAME]", name),
+                ("generateUniqueName", "true"),
+                ("fileContent[0]", name),
+                ("fileContent[1]", encoded),
+            ],
+        )
+        file_id = self._extract_disk_file_id(payload)
+        if file_id is not None:
+            return file_id
+        raise BitrixError("Cannot parse disk file id from fileContent response", str(payload))
+
     async def upload_to_folder(self, folder_id: int, local_path: str, filename: str | None = None) -> int:
         name = filename or Path(local_path).name
 
@@ -105,32 +125,30 @@ class BitrixClient:
             raise BitrixError("Upload URL or field is missing in Bitrix response", str(payload))
 
         # Step 2: upload binary to the signed URL returned by Step 1.
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            with open(local_path, "rb") as file_obj:
-                response = await client.post(
-                    str(upload_url),
-                    files={str(field_name): (name, file_obj)},
-                )
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                with open(local_path, "rb") as file_obj:
+                    response = await client.post(
+                        str(upload_url),
+                        files={str(field_name): (name, file_obj)},
+                    )
+        except httpx.TransportError:
+            # Fallback for unstable uploadUrl transport path: send content via REST fileContent.
+            return await self._upload_via_file_content(folder_id=folder_id, local_path=local_path, name=name)
 
         try:
             upload_payload = response.json()
         except Exception:
-            raise BitrixError(
-                f"Bitrix upload URL returned non-JSON response (HTTP {response.status_code})",
-                response.text,
-            )
+            return await self._upload_via_file_content(folder_id=folder_id, local_path=local_path, name=name)
 
         if "error" in upload_payload:
-            raise BitrixError(
-                upload_payload.get("error", "bitrix_error"),
-                upload_payload.get("error_description", ""),
-            )
+            return await self._upload_via_file_content(folder_id=folder_id, local_path=local_path, name=name)
 
         file_id = self._extract_disk_file_id(upload_payload)
         if file_id is not None:
             return file_id
 
-        raise BitrixError("Cannot parse disk file id from upload response", str(upload_payload))
+        return await self._upload_via_file_content(folder_id=folder_id, local_path=local_path, name=name)
 
     async def create_task(
         self,
