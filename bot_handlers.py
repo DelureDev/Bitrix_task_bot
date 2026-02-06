@@ -216,15 +216,11 @@ def _is_allowed(settings, tg_user_id: int) -> bool:
 
 
 def build_task_description(user_desc: str, initiator_block: str, attachments_block: str) -> str:
-    parts = [
-        user_desc.strip(),
-        "",
-        initiator_block.strip(),
-        "",
-        attachments_block.strip(),
-    ]
+    parts = [user_desc.strip(), "", initiator_block.strip()]
+    attachments_block = (attachments_block or "").strip()
+    if attachments_block:
+        parts.extend(["", attachments_block])
     return "\n".join(parts).strip()
-
 
 def build_initiator_block(update: Update) -> str:
     u = update.effective_user
@@ -235,15 +231,8 @@ def build_initiator_block(update: Update) -> str:
 
 
 def build_attachments_block(files: List[SavedFile], upload_root: str) -> str:
-    if not files:
-        return "Вложения:\n- (нет)"
-    lines = ["Вложения (сохранены на сервере):"]
-    for f in files:
-        # показываем относительный путь от корня проекта, чтобы читалось
-        rel = os.path.relpath(f.local_path, start=os.getcwd())
-        lines.append(f"- {f.original_name} -> {rel}")
-    return "\n".join(lines)
-
+    # Local file paths are internal; keep Bitrix task description clean.
+    return ""
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["_menu_shown"] = True

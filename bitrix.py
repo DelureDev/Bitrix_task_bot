@@ -76,25 +76,43 @@ class BitrixClient:
         with open(local_path, "rb") as file_obj:
             encoded = base64.b64encode(file_obj.read()).decode("ascii")
 
-        payload = await self.call(
-            "disk.folder.uploadfile",
-            [
-                ("id", str(int(folder_id))),
-                ("data[NAME]", name),
-                ("generateUniqueName", "true"),
-                ("fileContent[0]", name),
-                ("fileContent[1]", encoded),
-            ],
+        data: list[tuple[str, str]] = [
+            ("id", str(int(folder_id))),
+            ("data[NAME]", name),
+            ("generateUniqueName", "true"),
+            ("fileContent[0]", name),
+            ("fileContent[1]", encoded),
+        ]
+        encoded_data = urlencode(data).encode("utf-8")
+        timeout = httpx.Timeout(
+            connect=min(20.0, self.upload_timeout),
+            read=self.upload_timeout,
+            write=self.upload_timeout,
+            pool=min(20.0, self.upload_timeout),
         )
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(
+                f"{self.webhook_base}disk.folder.uploadfile",
+                content=encoded_data,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+
+        try:
+            payload = response.json()
+        except Exception:
+            raise BitrixError(
+                f"Bitrix returned non-JSON response (HTTP {response.status_code})",
+                response.text,
+            )
+        if "error" in payload:
+            raise BitrixError(payload.get("error", "bitrix_error"), payload.get("error_description", ""))
+
         file_id = self._extract_disk_file_id(payload)
         if file_id is not None:
             return file_id
         raise BitrixError("Cannot parse disk file id from fileContent response", str(payload))
 
-    async def upload_to_folder(self, folder_id: int, local_path: str, filename: str | None = None) -> int:
-        name = filename or Path(local_path).name
-
-        # Upload can be significantly slower than regular REST calls.
+    async def _upload_via_upload_url(self, folder_id: int, local_path: str, name: str) -> int:
         timeout = httpx.Timeout(
             connect=min(20.0, self.upload_timeout),
             read=self.upload_timeout,
@@ -148,7 +166,32 @@ class BitrixClient:
         if file_id is not None:
             return file_id
 
-        return await self._upload_via_file_content(folder_id=folder_id, local_path=local_path, name=name)
+        raise BitrixError("Cannot parse disk file id from upload response", str(upload_payload))
+
+    async def upload_to_folder(self, folder_id: int, local_path: str, filename: str | None = None) -> int:
+        name = filename or Path(local_path).name
+        size_bytes = Path(local_path).stat().st_size
+
+        # For small files use one REST call (fileContent) first to avoid long waits on uploadUrl transport.
+        prefer_file_content = size_bytes <= 5 * 1024 * 1024
+        strategies = (
+            ("fileContent", self._upload_via_file_content),
+            ("uploadUrl", self._upload_via_upload_url),
+        )
+        if not prefer_file_content:
+            strategies = (
+                ("uploadUrl", self._upload_via_upload_url),
+                ("fileContent", self._upload_via_file_content),
+            )
+
+        failures: list[str] = []
+        for strategy_name, strategy in strategies:
+            try:
+                return await strategy(folder_id=folder_id, local_path=local_path, name=name)
+            except Exception as exc:
+                failures.append(f"{strategy_name}: {exc}")
+
+        raise BitrixError("All disk upload strategies failed", " | ".join(failures))
 
     async def create_task(
         self,
