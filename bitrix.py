@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import base64
+import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
 import httpx
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -16,10 +20,17 @@ class BitrixError(Exception):
 
 
 class BitrixClient:
-    def __init__(self, webhook_base: str, timeout: float = 20.0, upload_timeout: float = 90.0):
+    def __init__(
+        self,
+        webhook_base: str,
+        timeout: float = 20.0,
+        upload_timeout: float = 90.0,
+        upload_url_timeout: float = 25.0,
+    ):
         self.webhook_base = webhook_base
         self.timeout = timeout
         self.upload_timeout = upload_timeout
+        self.upload_url_timeout = upload_url_timeout
 
     async def call(self, method: str, data: list[tuple[str, str]] | dict[str, str]) -> dict[str, Any]:
         url = f"{self.webhook_base}{method}"
@@ -72,7 +83,13 @@ class BitrixClient:
 
         return None
 
-    async def _upload_via_file_content(self, folder_id: int, local_path: str, name: str) -> int:
+    async def _upload_via_file_content(
+        self,
+        folder_id: int,
+        local_path: str,
+        name: str,
+        timeout_s: float | None = None,
+    ) -> int:
         with open(local_path, "rb") as file_obj:
             encoded = base64.b64encode(file_obj.read()).decode("ascii")
 
@@ -84,11 +101,12 @@ class BitrixClient:
             ("fileContent[1]", encoded),
         ]
         encoded_data = urlencode(data).encode("utf-8")
+        effective_timeout = timeout_s if timeout_s is not None else self.upload_timeout
         timeout = httpx.Timeout(
-            connect=min(20.0, self.upload_timeout),
-            read=self.upload_timeout,
-            write=self.upload_timeout,
-            pool=min(20.0, self.upload_timeout),
+            connect=min(20.0, effective_timeout),
+            read=effective_timeout,
+            write=effective_timeout,
+            pool=min(20.0, effective_timeout),
         )
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
@@ -112,12 +130,19 @@ class BitrixClient:
             return file_id
         raise BitrixError("Cannot parse disk file id from fileContent response", str(payload))
 
-    async def _upload_via_upload_url(self, folder_id: int, local_path: str, name: str) -> int:
+    async def _upload_via_upload_url(
+        self,
+        folder_id: int,
+        local_path: str,
+        name: str,
+        timeout_s: float | None = None,
+    ) -> int:
+        effective_timeout = timeout_s if timeout_s is not None else self.upload_url_timeout
         timeout = httpx.Timeout(
-            connect=min(20.0, self.upload_timeout),
-            read=self.upload_timeout,
-            write=self.upload_timeout,
-            pool=min(20.0, self.upload_timeout),
+            connect=min(20.0, effective_timeout),
+            read=effective_timeout,
+            write=effective_timeout,
+            pool=min(20.0, effective_timeout),
         )
 
         # Step 1: request an upload slot from Bitrix Disk.
@@ -143,24 +168,26 @@ class BitrixClient:
             raise BitrixError("Upload URL or field is missing in Bitrix response", str(payload))
 
         # Step 2: upload binary to the signed URL returned by Step 1.
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                with open(local_path, "rb") as file_obj:
-                    response = await client.post(
-                        str(upload_url),
-                        files={str(field_name): (name, file_obj)},
-                    )
-        except httpx.TransportError:
-            # Fallback for unstable uploadUrl transport path: send content via REST fileContent.
-            return await self._upload_via_file_content(folder_id=folder_id, local_path=local_path, name=name)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            with open(local_path, "rb") as file_obj:
+                response = await client.post(
+                    str(upload_url),
+                    files={str(field_name): (name, file_obj)},
+                )
 
         try:
             upload_payload = response.json()
         except Exception:
-            return await self._upload_via_file_content(folder_id=folder_id, local_path=local_path, name=name)
+            raise BitrixError(
+                f"Bitrix upload URL returned non-JSON response (HTTP {response.status_code})",
+                response.text,
+            )
 
         if "error" in upload_payload:
-            return await self._upload_via_file_content(folder_id=folder_id, local_path=local_path, name=name)
+            raise BitrixError(
+                upload_payload.get("error", "bitrix_error"),
+                upload_payload.get("error_description", ""),
+            )
 
         file_id = self._extract_disk_file_id(upload_payload)
         if file_id is not None:
@@ -172,23 +199,48 @@ class BitrixClient:
         name = filename or Path(local_path).name
         size_bytes = Path(local_path).stat().st_size
 
-        # For small files use one REST call (fileContent) first to avoid long waits on uploadUrl transport.
-        prefer_file_content = size_bytes <= 5 * 1024 * 1024
-        strategies = (
-            ("fileContent", self._upload_via_file_content),
-            ("uploadUrl", self._upload_via_upload_url),
-        )
-        if not prefer_file_content:
+        # For small files prefer fileContent to avoid waiting on unstable signed upload URL.
+        small_file = size_bytes <= 2 * 1024 * 1024
+        if small_file:
             strategies = (
-                ("uploadUrl", self._upload_via_upload_url),
-                ("fileContent", self._upload_via_file_content),
+                ("fileContent", self._upload_via_file_content, self.upload_timeout),
+                ("uploadUrl", self._upload_via_upload_url, self.upload_url_timeout),
+            )
+        else:
+            strategies = (
+                ("uploadUrl", self._upload_via_upload_url, self.upload_timeout),
+                ("fileContent", self._upload_via_file_content, self.upload_timeout),
             )
 
         failures: list[str] = []
-        for strategy_name, strategy in strategies:
+        for strategy_name, strategy, timeout_s in strategies:
+            started = time.monotonic()
             try:
-                return await strategy(folder_id=folder_id, local_path=local_path, name=name)
+                file_id = await strategy(
+                    folder_id=folder_id,
+                    local_path=local_path,
+                    name=name,
+                    timeout_s=timeout_s,
+                )
+                elapsed_ms = int((time.monotonic() - started) * 1000)
+                log.info(
+                    "Bitrix disk upload strategy=%s success file=%s size=%sB elapsed_ms=%s",
+                    strategy_name,
+                    name,
+                    size_bytes,
+                    elapsed_ms,
+                )
+                return file_id
             except Exception as exc:
+                elapsed_ms = int((time.monotonic() - started) * 1000)
+                log.warning(
+                    "Bitrix disk upload strategy=%s failed file=%s size=%sB elapsed_ms=%s error=%s",
+                    strategy_name,
+                    name,
+                    size_bytes,
+                    elapsed_ms,
+                    exc,
+                )
                 failures.append(f"{strategy_name}: {exc}")
 
         raise BitrixError("All disk upload strategies failed", " | ".join(failures))
