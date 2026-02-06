@@ -1182,6 +1182,10 @@ def _is_retryable_upload_error(exc: Exception) -> bool:
         details = f"{exc.message} {exc.details}".lower()
         markers = (
             "timeout",
+            "readtimeout",
+            "connecttimeout",
+            "remoteprotocolerror",
+            "all disk upload strategies failed",
             "temporar",
             "service unavailable",
             "gateway timeout",

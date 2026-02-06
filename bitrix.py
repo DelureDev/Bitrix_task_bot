@@ -32,6 +32,13 @@ class BitrixClient:
         self.upload_timeout = upload_timeout
         self.upload_url_timeout = upload_url_timeout
 
+    @staticmethod
+    def _exc_brief(exc: Exception) -> str:
+        text = str(exc).strip()
+        if text:
+            return f"{exc.__class__.__name__}: {text}"
+        return exc.__class__.__name__
+
     async def call(self, method: str, data: list[tuple[str, str]] | dict[str, str]) -> dict[str, Any]:
         url = f"{self.webhook_base}{method}"
         encoded = urlencode(data).encode("utf-8")
@@ -202,9 +209,11 @@ class BitrixClient:
         # For small files prefer fileContent to avoid waiting on unstable signed upload URL.
         small_file = size_bytes <= 2 * 1024 * 1024
         if small_file:
+            small_fc_timeout = min(self.upload_timeout, 10.0)
+            small_url_timeout = min(self.upload_url_timeout, 8.0)
             strategies = (
-                ("fileContent", self._upload_via_file_content, self.upload_timeout),
-                ("uploadUrl", self._upload_via_upload_url, self.upload_url_timeout),
+                ("fileContent", self._upload_via_file_content, small_fc_timeout),
+                ("uploadUrl", self._upload_via_upload_url, small_url_timeout),
             )
         else:
             strategies = (
@@ -233,15 +242,16 @@ class BitrixClient:
                 return file_id
             except Exception as exc:
                 elapsed_ms = int((time.monotonic() - started) * 1000)
+                err = self._exc_brief(exc)
                 log.warning(
                     "Bitrix disk upload strategy=%s failed file=%s size=%sB elapsed_ms=%s error=%s",
                     strategy_name,
                     name,
                     size_bytes,
                     elapsed_ms,
-                    exc,
+                    err,
                 )
-                failures.append(f"{strategy_name}: {exc}")
+                failures.append(f"{strategy_name}: {err}")
 
         raise BitrixError("All disk upload strategies failed", " | ".join(failures))
 
