@@ -317,7 +317,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     if update.message:
-        await update.message.reply_text("Отменено.")
+        await update.message.reply_text("\u041e\u0442\u043c\u0435\u043d\u0435\u043d\u043e.", reply_markup=MAIN_MENU_START)
     return ConversationHandler.END
 
 
@@ -420,7 +420,7 @@ async def cb_cancel_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     query = update.callback_query
     await query.answer()
     context.user_data.clear()
-    await query.message.reply_text("Отменено.")
+    await query.message.reply_text("\u041e\u0442\u043c\u0435\u043d\u0435\u043d\u043e.", reply_markup=MAIN_MENU_START)
     return ConversationHandler.END
 
 
@@ -1372,7 +1372,7 @@ async def cb_confirm_create(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if failed_files:
         failed_list = "\n".join(f"- {name}" for name in failed_files)
         result_lines.append("Не загрузились файлы:\n" + failed_list)
-    await query.message.reply_text("\n".join(result_lines))
+    await query.message.reply_text("\n".join(result_lines), reply_markup=MAIN_MENU_START)
 
     context.user_data.clear()
     return ConversationHandler.END
