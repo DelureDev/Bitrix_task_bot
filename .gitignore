@@ -1,0 +1,17 @@
+# secrets
+.env
+*.env
+.env.*
+
+# venv / python
+.venv/
+__pycache__/
+*.pyc
+
+# runtime
+uploads/
+data/*.db
+*.log
+
+# IDE
+.vscode/
