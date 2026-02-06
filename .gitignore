@@ -31,3 +31,13 @@ data/*.db
 *.sqlite3
 
 # uploads already excluded
+
+# backups / swaps
+*.bak*
+*.swp
+*.swo
+
+# sqlite/db
+*.db
+*.db.*
+data/*.db*
