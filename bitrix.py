@@ -39,10 +39,16 @@ class BitrixClient:
             return f"{exc.__class__.__name__}: {text}"
         return exc.__class__.__name__
 
-    async def call(self, method: str, data: list[tuple[str, str]] | dict[str, str]) -> dict[str, Any]:
+    async def call(
+        self,
+        method: str,
+        data: list[tuple[str, str]] | dict[str, str],
+        timeout: float | httpx.Timeout | None = None,
+    ) -> dict[str, Any]:
         url = f"{self.webhook_base}{method}"
         encoded = urlencode(data).encode("utf-8")
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        request_timeout = timeout if timeout is not None else self.timeout
+        async with httpx.AsyncClient(timeout=request_timeout) as client:
             response = await client.post(
                 url,
                 content=encoded,
@@ -160,6 +166,7 @@ class BitrixClient:
                 ("data[NAME]", name),
                 ("generateUniqueName", "true"),
             ],
+            timeout=effective_timeout,
         )
         file_id = self._extract_disk_file_id(payload)
         if file_id is not None:
@@ -209,8 +216,9 @@ class BitrixClient:
         # For small files prefer fileContent to avoid waiting on unstable signed upload URL.
         small_file = size_bytes <= 2 * 1024 * 1024
         if small_file:
-            small_fc_timeout = min(self.upload_timeout, 10.0)
-            small_url_timeout = min(self.upload_url_timeout, 8.0)
+            # Keep small-file uploads fast but avoid overly aggressive timeouts on unstable links.
+            small_fc_timeout = min(self.upload_timeout, 30.0)
+            small_url_timeout = self.upload_url_timeout
             strategies = (
                 ("fileContent", self._upload_via_file_content, small_fc_timeout),
                 ("uploadUrl", self._upload_via_upload_url, small_url_timeout),
@@ -233,22 +241,24 @@ class BitrixClient:
                 )
                 elapsed_ms = int((time.monotonic() - started) * 1000)
                 log.info(
-                    "Bitrix disk upload strategy=%s success file=%s size=%sB elapsed_ms=%s",
+                    "Bitrix disk upload strategy=%s success file=%s size=%sB elapsed_ms=%s timeout_s=%s",
                     strategy_name,
                     name,
                     size_bytes,
                     elapsed_ms,
+                    timeout_s,
                 )
                 return file_id
             except Exception as exc:
                 elapsed_ms = int((time.monotonic() - started) * 1000)
                 err = self._exc_brief(exc)
                 log.warning(
-                    "Bitrix disk upload strategy=%s failed file=%s size=%sB elapsed_ms=%s error=%s",
+                    "Bitrix disk upload strategy=%s failed file=%s size=%sB elapsed_ms=%s timeout_s=%s error=%s",
                     strategy_name,
                     name,
                     size_bytes,
                     elapsed_ms,
+                    timeout_s,
                     err,
                 )
                 failures.append(f"{strategy_name}: {err}")
