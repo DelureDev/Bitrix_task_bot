@@ -1338,7 +1338,7 @@ async def cb_confirm_create(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             bitrix=bitrix,
             folder_id=settings.bitrix_disk_folder_id,
             files=files,
-            max_attempts=3,
+            max_attempts=5,
         )
         if failed_files and not uploaded_ids:
             failed_list = "\n".join(f"- {name}" for name in failed_files)

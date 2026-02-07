@@ -232,34 +232,25 @@ class BitrixClient:
 
         # For small files prefer fileContent to avoid waiting on unstable signed upload URL.
         small_file = size_bytes <= 2 * 1024 * 1024
-        on_first_attempt = bool(upload_attempt is not None and upload_attempt <= 1)
         on_last_attempt = bool(
             upload_attempt is not None
             and upload_max_attempts is not None
             and upload_attempt >= upload_max_attempts
         )
         if small_file:
-            if on_first_attempt:
-                # Attempt 1: very fast probe with fileContent only.
-                probe_fc_timeout = min(self.upload_timeout, 8.0)
-                strategies = (
-                    ("fileContent", self._upload_via_file_content, probe_fc_timeout),
-                )
-            elif on_last_attempt:
-                # Final attempt: try uploadUrl quickly, then fallback to fileContent.
+            if on_last_attempt:
+                # Final attempt: still probe fileContent first, then try uploadUrl as fallback.
+                final_fc_timeout = min(self.upload_timeout, 6.0)
                 final_url_timeout = min(self.upload_url_timeout, 6.0)
-                final_fc_timeout = min(self.upload_timeout, 15.0)
                 strategies = (
-                    ("uploadUrl", self._upload_via_upload_url, final_url_timeout),
                     ("fileContent", self._upload_via_file_content, final_fc_timeout),
+                    ("uploadUrl", self._upload_via_upload_url, final_url_timeout),
                 )
             else:
-                # Mid attempts: don't wait for final retry to try uploadUrl.
-                mid_url_timeout = min(self.upload_url_timeout, 6.0)
-                mid_fc_timeout = min(self.upload_timeout, 10.0)
+                # Early and mid attempts: fast fileContent probes to quickly catch recovery windows.
+                quick_fc_timeout = min(self.upload_timeout, 4.0)
                 strategies = (
-                    ("uploadUrl", self._upload_via_upload_url, mid_url_timeout),
-                    ("fileContent", self._upload_via_file_content, mid_fc_timeout),
+                    ("fileContent", self._upload_via_file_content, quick_fc_timeout),
                 )
         else:
             strategies = (
