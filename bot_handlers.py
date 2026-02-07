@@ -35,6 +35,8 @@ MAIN_MENU = ReplyKeyboardMarkup(
 )
 
 LINK_WAIT = 9901
+MAX_ATTACHMENTS_PER_TASK = 10
+MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024  # 20 MB
 
 def parse_bitrix_user_id(text: str) -> int | None:
     t = (text or "").strip()
@@ -55,6 +57,12 @@ def is_linked(context, tg_id: int) -> int | None:
     pass
 
 
+def _attachment_too_large(size_bytes: int | None) -> bool:
+    if not size_bytes:
+        return False
+    return int(size_bytes) > MAX_ATTACHMENT_BYTES
+
+
 async def _show_link_required_old_1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
         "\n".join([
@@ -71,7 +79,7 @@ async def help_find_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(
         "\n".join([
             "Как найти ваш ID в Bitrix24:",
-            "1) Откройте Bitrix24: https://fantasyclinic.bitrix24.ru/",
+            "1) Откройте Bitrix24: https://<portal>.bitrix24.ru/",
             "2) Нажмите на своё имя/аватар → Профиль",
             "3) В адресной строке будет .../company/personal/user/123/ — число 123 и есть ваш ID",
             "",
@@ -95,7 +103,7 @@ async def link_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             "Пришлите ссылку на ваш профиль или просто число ID.",
             "",
             "Пример ссылки:",
-            "https://fantasyclinic.bitrix24.ru/company/personal/user/123/",
+            "https://<portal>.bitrix24.ru/company/personal/user/123/",
             "или просто: 123"
         ]),
         reply_markup=MAIN_MENU
@@ -168,7 +176,7 @@ async def cmd_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "2) Скопируйте ссылку вида https://.../company/personal/user/123/\n"
             "3) Отправьте команду: /link <ссылка>\n\n"
             "Пример:\n"
-            "/link https://fantasyclinic.bitrix24.ru/company/personal/user/123/"
+            "/link https://<portal>.bitrix24.ru/company/personal/user/123/"
         )
         await update.message.reply_text(msg)
         return
@@ -262,7 +270,7 @@ async def maybe_show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["_menu_shown"] = True
-    logger.info('HIT cmd_task tg_id=%s text=%s', update.effective_user.id if update and getattr(update,'effective_user',None) else None, update.message.text if update and getattr(update,'message',None) else None)
+    logger.info('HIT cmd_task tg_id=%s', update.effective_user.id if update and getattr(update,'effective_user',None) else None)
 
     linked = is_linked(context, update.effective_user.id)
     if not linked:
@@ -296,7 +304,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             "Команда:\n"
             "/link <ссылка на ваш профиль>\n\n"
             "Пример:\n"
-            "/link https://fantasyclinic.bitrix24.ru/company/personal/user/123/\n\n"
+            "/link https://<portal>.bitrix24.ru/company/personal/user/123/\n\n"
             "После привязки снова нажмите /task."
         )
         return ConversationHandler.END
@@ -372,10 +380,20 @@ async def on_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     await update.message.chat.send_action(ChatAction.UPLOAD_DOCUMENT)
 
     saved: List[SavedFile] = context.user_data.get("files", [])
+    if len(saved) >= MAX_ATTACHMENTS_PER_TASK:
+        await update.message.reply_text(
+            f"Лимит вложений: {MAX_ATTACHMENTS_PER_TASK} на одну задачу. Нажмите «Готово ✅»."
+        )
+        return WAIT_ATTACHMENTS
 
     # Photo
     if update.message.photo:
         photo = update.message.photo[-1]
+        if _attachment_too_large(getattr(photo, "file_size", None)):
+            await update.message.reply_text(
+                "Файл слишком большой. Максимальный размер вложения: 20 MB."
+            )
+            return WAIT_ATTACHMENTS
         file = await context.bot.get_file(photo.file_id)
         filename = f"photo_{photo.file_unique_id}.jpg"
         local_path = make_local_path(upload_dir, filename)
@@ -388,6 +406,11 @@ async def on_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     # Document
     if update.message.document:
         doc = update.message.document
+        if _attachment_too_large(getattr(doc, "file_size", None)):
+            await update.message.reply_text(
+                "Файл слишком большой. Максимальный размер вложения: 20 MB."
+            )
+            return WAIT_ATTACHMENTS
         file = await context.bot.get_file(doc.file_id)
         original = doc.file_name or f"document_{doc.file_unique_id}"
         filename = safe_filename(original)
@@ -468,7 +491,7 @@ async def cb_confirm_create(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             "Сначала сделайте:\n"
             "/link <ссылка на ваш профиль>\n\n"
             "Пример:\n"
-            "/link https://fantasyclinic.bitrix24.ru/company/personal/user/123/"
+            "/link https://<portal>.bitrix24.ru/company/personal/user/123/"
         )
         context.user_data.clear()
         return ConversationHandler.END
@@ -492,7 +515,7 @@ async def cb_confirm_create(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     except BitrixError as e:
         # Если Bitrix не разрешил CREATED_BY — пробуем создать без него
         if created_by is not None:
-            log.warning("Bitrix rejected CREATED_BY=%s, retrying without it: %s %s", created_by, e.message, e.details)
+            log.warning("Bitrix rejected CREATED_BY=%s, retrying without it: %s", created_by, e.message)
             try:
                 task_id = await bitrix.create_task(
                     title=title,
@@ -502,24 +525,24 @@ async def cb_confirm_create(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                     priority=settings.bitrix_priority,
                     created_by=None,
                 )
-            except BitrixError as e2:
+            except BitrixError:
                 log.exception("Bitrix error (retry without CREATED_BY)")
-                await query.message.reply_text("\n".join(["Не получилось создать задачу.", f"Ошибка: {e2.message}", str(e2.details)]))
+                await query.message.reply_text("Не получилось создать задачу из-за ошибки Bitrix24. Попробуйте позже.")
                 context.user_data.clear()
                 return ConversationHandler.END
             except Exception as e2:
                 log.exception("Unexpected error (retry without CREATED_BY)")
-                await query.message.reply_text(f"Не получилось создать задачу. Ошибка: {e2}")
+                await query.message.reply_text("Не получилось создать задачу из-за ошибки Bitrix24. Попробуйте позже.")
                 context.user_data.clear()
                 return ConversationHandler.END
         else:
             log.exception("Bitrix error")
-            await query.message.reply_text("\n".join(["Не получилось создать задачу.", f"Ошибка: {e.message}", str(e.details)]))
+            await query.message.reply_text("Не получилось создать задачу из-за ошибки Bitrix24. Попробуйте позже.")
             context.user_data.clear()
             return ConversationHandler.END
     except Exception as e:
         log.exception("Unexpected error")
-        await query.message.reply_text(f"Не получилось создать задачу. Ошибка: {e}")
+        await query.message.reply_text("Не получилось создать задачу из-за ошибки Bitrix24. Попробуйте позже.")
         context.user_data.clear()
         return ConversationHandler.END
 
@@ -658,7 +681,7 @@ async def help_find_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(
         "\n".join([
             "Как найти ID в Bitrix24:",
-            "1) Откройте Bitrix24: https://fantasyclinic.bitrix24.ru/",
+            "1) Откройте Bitrix24: https://<portal>.bitrix24.ru/",
             "2) Нажмите на своё имя/аватар → Профиль",
             "3) В адресной строке будет .../company/personal/user/123/ — число 123 и есть ваш ID",
             "",
@@ -674,7 +697,7 @@ async def link_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             "Пришлите ссылку на ваш профиль или просто число ID.",
             "",
             "Пример:",
-            "https://fantasyclinic.bitrix24.ru/company/personal/user/123/",
+            "https://<portal>.bitrix24.ru/company/personal/user/123/",
             "или: 123"
         ]),
         reply_markup=MAIN_MENU
@@ -925,7 +948,7 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:  
     return ConversationHandler.END
 
 async def menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.info('HIT menu_router tg_id=%s text=%s', update.effective_user.id if update and getattr(update,'effective_user',None) else None, update.message.text if update and getattr(update,'message',None) else None)
+    logger.info('HIT menu_router tg_id=%s', update.effective_user.id if update and getattr(update,'effective_user',None) else None)
     text = (update.message.text or "").strip()
 
     if text == BTN_HELP:
@@ -1127,7 +1150,7 @@ async def menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     uid = update.effective_user.id if update and update.effective_user else None
     text = (update.message.text or "").strip()
     linked = get_linked_bitrix_id(context, uid) if uid else None
-    log.info("HIT menu_router tg_id=%s text=%s linked=%s", uid, text, linked)
+    log.info("HIT menu_router tg_id=%s linked=%s", uid, linked)
 
     if text == BTN_HELP:
         await help_find_id(update, context)
@@ -1146,7 +1169,7 @@ async def menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     uid = update.effective_user.id
     linked = get_linked_bitrix_id(context, uid)
-    log.info("HIT cmd_task tg_id=%s text=%s linked=%s", uid, update.message.text if update.message else None, linked)
+    log.info("HIT cmd_task tg_id=%s linked=%s", uid, linked)
 
     if not linked:
         await show_link_required(update, context)
@@ -1201,7 +1224,10 @@ def _is_retryable_upload_error(exc: Exception) -> bool:
 
 
 def _format_exception_brief(exc: Exception) -> str:
-    text = str(exc).strip()
+    if isinstance(exc, BitrixError):
+        text = (exc.message or "").strip()
+    else:
+        text = str(exc).strip()
     if text:
         return f"{exc.__class__.__name__}: {text}"
     return exc.__class__.__name__
@@ -1341,7 +1367,7 @@ async def cb_confirm_create(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             webdav_file_ids=uploaded_ids,
         )
     except BitrixError as e:
-        log.warning("Bitrix rejected CREATED_BY=%s, retrying without it: %s %s", created_by, e.message, e.details)
+        log.warning("Bitrix rejected CREATED_BY=%s, retrying without it: %s", created_by, e.message)
         try:
             task_id = await bitrix.create_task(
                 title=title,
@@ -1352,14 +1378,18 @@ async def cb_confirm_create(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 created_by=None,
                 webdav_file_ids=uploaded_ids,
             )
-        except Exception as e2:
+        except Exception:
             log.exception("Bitrix error (retry without CREATED_BY)")
-            await query.message.reply_text(f"Не получилось создать задачу. Ошибка: {e2}")
+            await query.message.reply_text(
+                "Не получилось создать задачу из-за ошибки Bitrix24. Попробуйте позже."
+            )
             context.user_data.clear()
             return ConversationHandler.END
-    except Exception as e:
+    except Exception:
         log.exception("Unexpected error")
-        await query.message.reply_text(f"Не получилось создать задачу. Ошибка: {e}")
+        await query.message.reply_text(
+            "Не получилось создать задачу из-за ошибки Bitrix24. Попробуйте позже."
+        )
         context.user_data.clear()
         return ConversationHandler.END
 
@@ -1452,7 +1482,7 @@ async def link_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             "Пришлите ссылку на ваш профиль или просто число ID.",
             "",
             "Пример:",
-            "https://fantasyclinic.bitrix24.ru/company/personal/user/123/",
+            "https://<portal>.bitrix24.ru/company/personal/user/123/",
             "или: 123",
         ]),
         reply_markup=MAIN_MENU_START
@@ -1486,7 +1516,7 @@ async def link_receive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     tg_id = update.effective_user.id
     bid = _get_linked_bitrix_id(context, tg_id)
-    _CLEAN_LOG.info("HIT cmd_task tg_id=%s linked=%s text=%s", tg_id, bid, update.message.text if update.message else None)
+    _CLEAN_LOG.info("HIT cmd_task tg_id=%s linked=%s", tg_id, bid)
 
     if not bid:
         await show_link_required(update, context)
@@ -1510,7 +1540,7 @@ async def menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     text = (update.message.text or "").strip()
     tg_id = update.effective_user.id if update.effective_user else None
     bid = _get_linked_bitrix_id(context, int(tg_id)) if tg_id else None
-    _CLEAN_LOG.info("HIT menu_router tg_id=%s linked=%s text=%s", tg_id, bid, text)
+    _CLEAN_LOG.info("HIT menu_router tg_id=%s linked=%s", tg_id, bid)
 
     if text == BTN_HELP:
         await help_find_id(update, context)
