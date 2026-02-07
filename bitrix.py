@@ -297,22 +297,27 @@ class BitrixClient:
 
         raise BitrixError("All disk upload strategies failed", " | ".join(failures))
 
-    async def list_tasks_for_responsible(
+    async def list_tasks_created_by(
         self,
-        responsible_id: int,
+        created_by: int,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
         safe_limit = max(1, min(int(limit), 20))
         payload = await self.call(
             "tasks.task.list",
             [
-                ("filter[RESPONSIBLE_ID]", str(int(responsible_id))),
-                ("filter[!REAL_STATUS]", "5"),
+                ("filter[CREATED_BY]", str(int(created_by))),
                 ("order[ID]", "desc"),
                 ("select[]", "ID"),
                 ("select[]", "TITLE"),
+                ("select[]", "STATUS"),
                 ("select[]", "REAL_STATUS"),
                 ("select[]", "DEADLINE"),
+                ("select[]", "id"),
+                ("select[]", "title"),
+                ("select[]", "status"),
+                ("select[]", "realStatus"),
+                ("select[]", "deadline"),
             ],
         )
 

@@ -1447,6 +1447,7 @@ _REAL_STATUS_LABELS = {
     4: "Ждёт контроля",
     5: "Завершена",
     6: "Отложена",
+    7: "Отклонена",
 }
 
 # UX: /start -> 2 кнопки. HELP показываем только в экране "нужна привязка".
@@ -1484,8 +1485,14 @@ async def cmd_me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 def _status_label(task: dict) -> str:
     raw = task.get("realStatus", task.get("REAL_STATUS", task.get("status", task.get("STATUS"))))
+    if isinstance(raw, dict):
+        for key in ("name", "NAME", "title", "TITLE", "value", "VALUE"):
+            val = raw.get(key)
+            if val:
+                return str(val)
+        raw = raw.get("id", raw.get("ID"))
     try:
-        return _REAL_STATUS_LABELS.get(int(raw), str(raw))
+        return _REAL_STATUS_LABELS.get(int(raw), str(int(raw)))
     except Exception:
         return str(raw or "-")
 
@@ -1534,9 +1541,9 @@ async def cmd_mytasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     bitrix: BitrixClient = context.application.bot_data["bitrix"]
-    await update.message.reply_text("Смотрю ваши активные задачи в Bitrix24…")
+    await update.message.reply_text("Смотрю задачи, которые вы создали в Bitrix24…")
     try:
-        tasks = await bitrix.list_tasks_for_responsible(int(bitrix_user_id), limit=MYTASKS_LIMIT)
+        tasks = await bitrix.list_tasks_created_by(int(bitrix_user_id), limit=MYTASKS_LIMIT)
     except Exception:
         _CLEAN_LOG.exception("cmd_mytasks failed tg_id=%s bitrix_user_id=%s", tg_id, bitrix_user_id)
         await update.message.reply_text(
@@ -1547,12 +1554,12 @@ async def cmd_mytasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if not tasks:
         await update.message.reply_text(
-            "Активных задач, где вы ответственный, сейчас нет ✅",
+            "Задач, созданных вами, пока нет ✅",
             reply_markup=MAIN_MENU_START,
         )
         return
 
-    lines = ["📋 Ваши активные задачи (вы ответственный):"]
+    lines = ["📋 Ваши последние задачи (вы автор):"]
     for index, task in enumerate(tasks, start=1):
         task_id = _task_id(task)
         title = str(task.get("title", task.get("TITLE", "(без названия)"))).strip() or "(без названия)"
