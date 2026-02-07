@@ -303,25 +303,33 @@ class BitrixClient:
         limit: int = 10,
     ) -> list[dict[str, Any]]:
         safe_limit = max(1, min(int(limit), 20))
-        payload = await self.call(
-            "tasks.task.list",
-            [
-                ("filter[CREATED_BY]", str(int(created_by))),
-                ("order[CREATED_DATE]", "desc"),
-                ("select[]", "ID"),
-                ("select[]", "TITLE"),
-                ("select[]", "STATUS"),
-                ("select[]", "REAL_STATUS"),
-                ("select[]", "DEADLINE"),
-                ("select[]", "CREATED_DATE"),
-                ("select[]", "id"),
-                ("select[]", "title"),
-                ("select[]", "status"),
-                ("select[]", "realStatus"),
-                ("select[]", "deadline"),
-                ("select[]", "createdDate"),
-            ],
-        )
+        base_fields: list[tuple[str, str]] = [
+            ("filter[CREATED_BY]", str(int(created_by))),
+            ("select[]", "ID"),
+            ("select[]", "TITLE"),
+            ("select[]", "STATUS"),
+            ("select[]", "REAL_STATUS"),
+            ("select[]", "DEADLINE"),
+            ("select[]", "CREATED_DATE"),
+            ("select[]", "id"),
+            ("select[]", "title"),
+            ("select[]", "status"),
+            ("select[]", "realStatus"),
+            ("select[]", "deadline"),
+            ("select[]", "createdDate"),
+        ]
+
+        try:
+            payload = await self.call(
+                "tasks.task.list",
+                [("order[CREATED_DATE]", "desc"), *base_fields],
+            )
+        except BitrixError:
+            # Compatibility fallback for portals that do not support CREATED_DATE ordering.
+            payload = await self.call(
+                "tasks.task.list",
+                [("order[ID]", "desc"), *base_fields],
+            )
 
         result = payload.get("result")
         tasks: list[Any]

@@ -265,7 +265,7 @@ async def maybe_show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     txt = (getattr(getattr(update, "message", None), "text", None) or "").strip()
     # не перехватываем тексты кнопок — их обработают основные хэндлеры/ConversationHandler
-    if txt in (BTN_CREATE, BTN_LINK, BTN_HELP):
+    if txt in (BTN_CREATE, BTN_LINK, BTN_HELP, BTN_MY_TASKS):
         return
 
     await cmd_start(update, context)
@@ -1521,6 +1521,7 @@ def _task_id(task: dict) -> int | None:
 
 
 async def cmd_mytasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data["_menu_shown"] = True
     settings = context.application.bot_data["settings"]
     tg_id = update.effective_user.id
     if not _is_allowed(settings, tg_id):
