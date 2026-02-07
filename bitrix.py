@@ -39,6 +39,16 @@ class BitrixClient:
             return f"{exc.__class__.__name__}: {text}"
         return exc.__class__.__name__
 
+    @staticmethod
+    def _is_timeout_error(exc: Exception) -> bool:
+        if isinstance(exc, httpx.TimeoutException):
+            return True
+        if isinstance(exc, BitrixError):
+            details = f"{exc.message} {exc.details}".lower()
+            markers = ("timeout", "readtimeout", "writetimeout", "connecttimeout", "pooltimeout")
+            return any(marker in details for marker in markers)
+        return False
+
     async def call(
         self,
         method: str,
@@ -217,8 +227,8 @@ class BitrixClient:
         small_file = size_bytes <= 2 * 1024 * 1024
         if small_file:
             # Keep small-file uploads fast but avoid overly aggressive timeouts on unstable links.
-            small_fc_timeout = min(self.upload_timeout, 30.0)
-            small_url_timeout = self.upload_url_timeout
+            small_fc_timeout = min(self.upload_timeout, 15.0)
+            small_url_timeout = min(self.upload_url_timeout, 12.0)
             strategies = (
                 ("fileContent", self._upload_via_file_content, small_fc_timeout),
                 ("uploadUrl", self._upload_via_upload_url, small_url_timeout),
@@ -262,6 +272,14 @@ class BitrixClient:
                     err,
                 )
                 failures.append(f"{strategy_name}: {err}")
+                # For small files, timeout on fileContent usually means transient Bitrix/network stall.
+                # Skip uploadUrl in the same attempt and let outer retry happen immediately.
+                if small_file and strategy_name == "fileContent" and self._is_timeout_error(exc):
+                    log.warning(
+                        "Bitrix disk upload short-circuit file=%s reason=fileContent_timeout",
+                        name,
+                    )
+                    break
 
         raise BitrixError("All disk upload strategies failed", " | ".join(failures))
 
