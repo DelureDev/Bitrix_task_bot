@@ -1240,11 +1240,12 @@ async def _upload_files_to_bitrix_disk(
     folder_id: int,
     files: List[SavedFile],
     max_attempts: int = 2,
+    upload_parallelism: int = UPLOAD_PARALLELISM,
 ) -> tuple[list[int], list[str]]:
     if not files:
         return [], []
 
-    semaphore = asyncio.Semaphore(max(1, min(UPLOAD_PARALLELISM, len(files))))
+    semaphore = asyncio.Semaphore(max(1, min(upload_parallelism, len(files))))
 
     async def _upload_one(saved_file: SavedFile) -> tuple[int | None, str | None]:
         file_label = _saved_file_label(saved_file)
@@ -1346,7 +1347,8 @@ async def cb_confirm_create(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             bitrix=bitrix,
             folder_id=settings.bitrix_disk_folder_id,
             files=files,
-            max_attempts=4,
+            max_attempts=settings.bitrix_upload_max_attempts,
+            upload_parallelism=settings.bitrix_upload_parallelism,
         )
         if failed_files and not uploaded_ids:
             failed_list = "\n".join(f"- {name}" for name in failed_files)

@@ -26,11 +26,15 @@ class BitrixClient:
         timeout: float = 20.0,
         upload_timeout: float = 90.0,
         upload_url_timeout: float = 25.0,
+        small_upload_probe_timeout: float = 4.0,
+        small_upload_final_timeout: float = 5.0,
     ):
         self.webhook_base = webhook_base
         self.timeout = timeout
         self.upload_timeout = upload_timeout
         self.upload_url_timeout = upload_url_timeout
+        self.small_upload_probe_timeout = small_upload_probe_timeout
+        self.small_upload_final_timeout = small_upload_final_timeout
         self._http = httpx.AsyncClient(
             timeout=self.timeout,
             limits=httpx.Limits(max_keepalive_connections=20, max_connections=50),
@@ -235,15 +239,15 @@ class BitrixClient:
         if small_file:
             if on_last_attempt:
                 # Final attempt: still probe fileContent first, then try uploadUrl as fallback.
-                final_fc_timeout = min(self.upload_timeout, 5.0)
-                final_url_timeout = min(self.upload_url_timeout, 5.0)
+                final_fc_timeout = min(self.upload_timeout, self.small_upload_final_timeout)
+                final_url_timeout = min(self.upload_url_timeout, self.small_upload_final_timeout)
                 strategies = (
                     ("fileContent", self._upload_via_file_content, final_fc_timeout),
                     ("uploadUrl", self._upload_via_upload_url, final_url_timeout),
                 )
             else:
                 # Early and mid attempts: fast fileContent probes to quickly catch recovery windows.
-                quick_fc_timeout = min(self.upload_timeout, 4.0)
+                quick_fc_timeout = min(self.upload_timeout, self.small_upload_probe_timeout)
                 strategies = (
                     ("fileContent", self._upload_via_file_content, quick_fc_timeout),
                 )

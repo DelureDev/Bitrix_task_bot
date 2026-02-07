@@ -84,6 +84,13 @@ python main.py
   - Если пусто, доступ разрешен всем.
 - `UPLOAD_DIR` - директория локального сохранения вложений (по умолчанию `./uploads`).
 - `USERMAP_DB` - путь к SQLite БД привязок (по умолчанию `./data/users.db`).
+- `BITRIX_HTTP_TIMEOUT` - таймаут обычных запросов к Bitrix API в секундах (по умолчанию `20`).
+- `BITRIX_UPLOAD_TIMEOUT` - базовый таймаут upload-запросов в секундах (по умолчанию `90`).
+- `BITRIX_UPLOAD_URL_TIMEOUT` - базовый таймаут uploadUrl-пути в секундах (по умолчанию `25`).
+- `BITRIX_SMALL_UPLOAD_PROBE_TIMEOUT` - быстрый таймаут для ранних попыток `fileContent` на небольших файлах (по умолчанию `4`).
+- `BITRIX_SMALL_UPLOAD_FINAL_TIMEOUT` - таймаут для финальной попытки (и `fileContent`, и `uploadUrl`) на небольших файлах (по умолчанию `5`).
+- `BITRIX_UPLOAD_MAX_ATTEMPTS` - число попыток загрузки одного файла в Bitrix Disk (по умолчанию `4`).
+- `BITRIX_UPLOAD_PARALLELISM` - сколько файлов загружать параллельно (по умолчанию `2`).
 - `LOG_LEVEL` - уровень логирования (`INFO` по умолчанию).
 
 ### Пример `.env`
@@ -103,6 +110,15 @@ BITRIX_TASK_URL_TEMPLATE=https://yourportal.bitrix24.ru/company/personal/user/1/
 ALLOWED_TG_USERS=12345678,87654321
 UPLOAD_DIR=./uploads
 USERMAP_DB=./data/users.db
+
+BITRIX_HTTP_TIMEOUT=20
+BITRIX_UPLOAD_TIMEOUT=90
+BITRIX_UPLOAD_URL_TIMEOUT=25
+BITRIX_SMALL_UPLOAD_PROBE_TIMEOUT=4
+BITRIX_SMALL_UPLOAD_FINAL_TIMEOUT=5
+BITRIX_UPLOAD_MAX_ATTEMPTS=4
+BITRIX_UPLOAD_PARALLELISM=2
+
 LOG_LEVEL=INFO
 ```
 
@@ -141,10 +157,11 @@ UPLOAD_DIR/YYYY-MM-DD/<tg_id>/<ticket_id>/...
 - Бот не создает задачи без привязки профиля Bitrix.
 - `CREATED_BY` берется из привязки пользователя; если Bitrix отклоняет этот параметр, есть fallback-попытка создания без него.
 - Вложения сначала сохраняются локально, затем загружаются в Bitrix Disk (`disk.folder.uploadfile`) в папку `BITRIX_DISK_FOLDER_ID`.
-- При нескольких вложениях загрузка выполняется с ограниченной параллельностью (до 2 файлов одновременно), чтобы сократить общее время.
+- При нескольких вложениях загрузка выполняется с ограниченной параллельностью (настраивается через `BITRIX_UPLOAD_PARALLELISM`), чтобы сократить общее время.
 - При создании задачи вложения передаются в `UF_TASK_WEBDAV_FILES` в формате `n<file_id>`.
 - Локальные пути вложений не добавляются в описание задачи (чтобы не засорять текст).
 - Для небольших файлов используется быстрый путь загрузки (`fileContent`), при сбоях есть fallback на `uploadUrl`.
+- Количество попыток и upload-таймауты настраиваются через `BITRIX_UPLOAD_MAX_ATTEMPTS`, `BITRIX_SMALL_UPLOAD_PROBE_TIMEOUT` и `BITRIX_SMALL_UPLOAD_FINAL_TIMEOUT`.
 - Ограничения вложений: до 10 файлов на задачу, до 20 MB на один файл.
 - Если пользователь приложил файлы и не загрузился ни один, задача не создается.
 - Если загрузилась только часть файлов, задача создается с успешными вложениями, а бот показывает список неуспешных.

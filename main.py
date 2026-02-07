@@ -43,7 +43,14 @@ def main() -> None:
     app = Application.builder().token(settings.tg_bot_token).build()
 
     app.bot_data["settings"] = settings
-    app.bot_data["bitrix"] = BitrixClient(settings.bitrix_webhook_base)
+    app.bot_data["bitrix"] = BitrixClient(
+        settings.bitrix_webhook_base,
+        timeout=settings.bitrix_http_timeout,
+        upload_timeout=settings.bitrix_upload_timeout,
+        upload_url_timeout=settings.bitrix_upload_url_timeout,
+        small_upload_probe_timeout=settings.bitrix_small_upload_probe_timeout,
+        small_upload_final_timeout=settings.bitrix_small_upload_final_timeout,
+    )
 
     usermap = UserMap(settings.usermap_db)
     usermap.init()
