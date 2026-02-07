@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import datetime
 logger = logging.getLogger(__name__)
@@ -37,6 +38,7 @@ MAIN_MENU = ReplyKeyboardMarkup(
 LINK_WAIT = 9901
 MAX_ATTACHMENTS_PER_TASK = 10
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024  # 20 MB
+UPLOAD_PARALLELISM = 2
 
 def parse_bitrix_user_id(text: str) -> int | None:
     t = (text or "").strip()
@@ -1239,62 +1241,68 @@ async def _upload_files_to_bitrix_disk(
     files: List[SavedFile],
     max_attempts: int = 2,
 ) -> tuple[list[int], list[str]]:
-    uploaded_ids: list[int] = []
-    failed_files: list[str] = []
+    if not files:
+        return [], []
 
-    for saved_file in files:
+    semaphore = asyncio.Semaphore(max(1, min(UPLOAD_PARALLELISM, len(files))))
+
+    async def _upload_one(saved_file: SavedFile) -> tuple[int | None, str | None]:
         file_label = _saved_file_label(saved_file)
-        uploaded = False
-
-        for attempt in range(1, max_attempts + 1):
-            log.info(
-                "Disk upload start name=%s attempt=%s/%s folder_id=%s",
-                file_label,
-                attempt,
-                max_attempts,
-                folder_id,
-            )
-            try:
-                file_id = await bitrix.upload_to_folder(
-                    folder_id=folder_id,
-                    local_path=saved_file.local_path,
-                    filename=file_label,
-                    upload_attempt=attempt,
-                    upload_max_attempts=max_attempts,
-                )
-                uploaded_ids.append(int(file_id))
+        async with semaphore:
+            for attempt in range(1, max_attempts + 1):
                 log.info(
-                    "Disk upload success name=%s file_id=%s attempt=%s/%s",
+                    "Disk upload start name=%s attempt=%s/%s folder_id=%s",
                     file_label,
-                    file_id,
                     attempt,
                     max_attempts,
+                    folder_id,
                 )
-                uploaded = True
-                break
-            except Exception as exc:
-                retryable = attempt < max_attempts and _is_retryable_upload_error(exc)
-                if retryable:
-                    log.warning(
-                        "Disk upload retry name=%s attempt=%s/%s error=%s",
+                try:
+                    file_id = await bitrix.upload_to_folder(
+                        folder_id=folder_id,
+                        local_path=saved_file.local_path,
+                        filename=file_label,
+                        upload_attempt=attempt,
+                        upload_max_attempts=max_attempts,
+                    )
+                    log.info(
+                        "Disk upload success name=%s file_id=%s attempt=%s/%s",
+                        file_label,
+                        file_id,
+                        attempt,
+                        max_attempts,
+                    )
+                    return int(file_id), None
+                except Exception as exc:
+                    retryable = attempt < max_attempts and _is_retryable_upload_error(exc)
+                    if retryable:
+                        log.warning(
+                            "Disk upload retry name=%s attempt=%s/%s error=%s",
+                            file_label,
+                            attempt,
+                            max_attempts,
+                            _format_exception_brief(exc),
+                        )
+                        continue
+                    log.exception(
+                        "Disk upload failed name=%s attempt=%s/%s error=%s",
                         file_label,
                         attempt,
                         max_attempts,
                         _format_exception_brief(exc),
                     )
-                    continue
-                log.exception(
-                    "Disk upload failed name=%s attempt=%s/%s error=%s",
-                    file_label,
-                    attempt,
-                    max_attempts,
-                    _format_exception_brief(exc),
-                )
-                failed_files.append(file_label)
-                break
+                    return None, file_label
+            return None, file_label
 
-        if not uploaded and file_label not in failed_files:
-            failed_files.append(file_label)
+    results = await asyncio.gather(*(_upload_one(saved_file) for saved_file in files))
+
+    uploaded_ids: list[int] = []
+    failed_files: list[str] = []
+    for file_id, failed in results:
+        if file_id is not None:
+            uploaded_ids.append(file_id)
+        if failed:
+            failed_files.append(failed)
 
     return uploaded_ids, failed_files
 
@@ -1338,7 +1346,7 @@ async def cb_confirm_create(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             bitrix=bitrix,
             folder_id=settings.bitrix_disk_folder_id,
             files=files,
-            max_attempts=5,
+            max_attempts=4,
         )
         if failed_files and not uploaded_ids:
             failed_list = "\n".join(f"- {name}" for name in failed_files)

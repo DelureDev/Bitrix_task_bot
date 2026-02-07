@@ -31,6 +31,11 @@ class BitrixClient:
         self.timeout = timeout
         self.upload_timeout = upload_timeout
         self.upload_url_timeout = upload_url_timeout
+        self._http = httpx.AsyncClient(
+            timeout=self.timeout,
+            limits=httpx.Limits(max_keepalive_connections=20, max_connections=50),
+            http2=False,
+        )
 
     @staticmethod
     def _exc_brief(exc: Exception) -> str:
@@ -38,16 +43,6 @@ class BitrixClient:
         if text:
             return f"{exc.__class__.__name__}: {text}"
         return exc.__class__.__name__
-
-    @staticmethod
-    def _is_timeout_error(exc: Exception) -> bool:
-        if isinstance(exc, httpx.TimeoutException):
-            return True
-        if isinstance(exc, BitrixError):
-            details = f"{exc.message} {exc.details}".lower()
-            markers = ("timeout", "readtimeout", "writetimeout", "connecttimeout", "pooltimeout")
-            return any(marker in details for marker in markers)
-        return False
 
     async def call(
         self,
@@ -58,12 +53,12 @@ class BitrixClient:
         url = f"{self.webhook_base}{method}"
         encoded = urlencode(data).encode("utf-8")
         request_timeout = timeout if timeout is not None else self.timeout
-        async with httpx.AsyncClient(timeout=request_timeout) as client:
-            response = await client.post(
-                url,
-                content=encoded,
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
+        response = await self._http.post(
+            url,
+            content=encoded,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=request_timeout,
+        )
 
         try:
             payload = response.json()
@@ -131,12 +126,12 @@ class BitrixClient:
             write=effective_timeout,
             pool=min(20.0, effective_timeout),
         )
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(
-                f"{self.webhook_base}disk.folder.uploadfile",
-                content=encoded_data,
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
+        response = await self._http.post(
+            f"{self.webhook_base}disk.folder.uploadfile",
+            content=encoded_data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=timeout,
+        )
 
         try:
             payload = response.json()
@@ -192,12 +187,12 @@ class BitrixClient:
             raise BitrixError("Upload URL or field is missing in Bitrix response", str(payload))
 
         # Step 2: upload binary to the signed URL returned by Step 1.
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            with open(local_path, "rb") as file_obj:
-                response = await client.post(
-                    str(upload_url),
-                    files={str(field_name): (name, file_obj)},
-                )
+        with open(local_path, "rb") as file_obj:
+            response = await self._http.post(
+                str(upload_url),
+                files={str(field_name): (name, file_obj)},
+                timeout=timeout,
+            )
 
         try:
             upload_payload = response.json()
@@ -240,8 +235,8 @@ class BitrixClient:
         if small_file:
             if on_last_attempt:
                 # Final attempt: still probe fileContent first, then try uploadUrl as fallback.
-                final_fc_timeout = min(self.upload_timeout, 6.0)
-                final_url_timeout = min(self.upload_url_timeout, 6.0)
+                final_fc_timeout = min(self.upload_timeout, 5.0)
+                final_url_timeout = min(self.upload_url_timeout, 5.0)
                 strategies = (
                     ("fileContent", self._upload_via_file_content, final_fc_timeout),
                     ("uploadUrl", self._upload_via_upload_url, final_url_timeout),
